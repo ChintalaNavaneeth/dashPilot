@@ -1,18 +1,20 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import { DarkTheme, DefaultTheme, ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { StatusBar } from 'expo-status-bar';
+import { SplashScreen, Stack } from 'expo-router';
+import { Platform } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/useColorScheme';
+import { ThemeProvider, useTheme } from '@/hooks/useThemeContext';
+import { WakeProvider } from '@/hooks/useWakeContext';
+import { BluetoothProvider } from '@/hooks/useBluetoothContext';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
+function RootLayoutNavigation({ theme }: { theme: 'light' | 'dark' }) {
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
@@ -21,6 +23,10 @@ export default function RootLayout() {
     if (loaded) {
       SplashScreen.hideAsync();
     }
+    // Hide system UI (immersive mode)
+    if (Platform.OS === 'android') {
+      NavigationBar.setVisibilityAsync('hidden');
+    }
   }, [loaded]);
 
   if (!loaded) {
@@ -28,12 +34,44 @@ export default function RootLayout() {
   }
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="+not-found" />
-      </Stack>
-      <StatusBar style="auto" />
+    <NavigationThemeProvider value={theme === 'dark' ? DarkTheme : DefaultTheme}>
+      <View style={[styles.container, { backgroundColor: theme === 'dark' ? '#000' : '#fff' }]}>
+        <Stack screenOptions={{
+          headerShown: false,
+          animation: 'none',
+          gestureEnabled: false,
+          statusBarHidden: true
+        }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="navigation" />
+          <Stack.Screen name="settings" />
+          <Stack.Screen name="obd" />
+          <Stack.Screen name="(tabs)" />
+        </Stack>
+      </View>
+    </NavigationThemeProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <WakeProvider>
+        <BluetoothProvider>
+          <ThemeAwareNavigation />
+        </BluetoothProvider>
+      </WakeProvider>
     </ThemeProvider>
   );
 }
+
+function ThemeAwareNavigation() {
+  const { isDarkMode } = useTheme();
+  return <RootLayoutNavigation theme={isDarkMode ? 'dark' : 'light'} />;
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  }
+});
