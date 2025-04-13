@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { StyleSheet, View, Text, TouchableOpacity, Switch, ScrollView, Alert, Modal, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Application from 'expo-application';
 import { useTheme } from '@/hooks/useThemeContext';
 import { useWake } from '@/hooks/useWakeContext';
-import { useBluetooth } from '@/hooks/useBluetoothContext';
+import { useBluetooth } from '../hooks/useBluetoothContext';
 
 interface Settings {
   darkMode: boolean;
@@ -15,6 +15,10 @@ interface Settings {
   useMetricUnits: boolean;
   autoBluetoothConnect: boolean;
 }
+
+const showError = (title: string, message: string) => {
+  Alert.alert(title, message, [{ text: 'OK' }]);
+};
 
 export default function SettingsScreen() {
   const { isDarkMode, toggleTheme } = useTheme();
@@ -68,7 +72,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const updateSetting = async (key: keyof Settings, value: boolean) => {
+  const updateSetting = useCallback(async (key: keyof Settings, value: boolean) => {
     try {
       const newSettings = { ...settings, [key]: value };
       setSettings(newSettings);
@@ -82,73 +86,118 @@ export default function SettingsScreen() {
           toggleKeepScreen();
           break;
         case 'autoBluetoothConnect':
-          toggleAutoConnect();
+          await toggleAutoConnect();
           break;
       }
     } catch (error) {
-      console.error('Error saving settings:', error);
-      Alert.alert('Error', 'Failed to save settings');
+      showError('Settings Error', 'Failed to save settings. Please try again.');
+      // Revert the setting change
+      setSettings(prevSettings => ({ ...prevSettings }));
     }
-  };
+  }, [settings, toggleTheme, toggleKeepScreen, toggleAutoConnect]);
 
-  const handleDevicePress = async (deviceId: string, isConnected: boolean) => {
+  const handleDevicePress = useCallback(async (deviceId: string, isConnected: boolean) => {
     try {
       if (isConnected) {
         await disconnect();
+        Alert.alert('Success', 'Device disconnected successfully');
       } else {
         await connect(deviceId);
+        Alert.alert('Success', 'Device connected successfully');
       }
     } catch (error) {
-      console.error('Error handling device connection:', error);
+      showError(
+        'Connection Error',
+        isConnected 
+          ? 'Failed to disconnect from device. Please try again.'
+          : 'Failed to connect to device. Please make sure the device is turned on and in range.'
+      );
     }
-  };
+  }, [connect, disconnect]);
 
-  const handleScan = async () => {
+  const handleScan = useCallback(async () => {
     setIsScanning(true);
     try {
       await scanDevices();
       setSelectedTab('available');
     } catch (error) {
-      console.error('Error scanning:', error);
+      showError(
+        'Scan Error',
+        'Failed to scan for devices. Please make sure Bluetooth is enabled and try again.'
+      );
     } finally {
       setIsScanning(false);
     }
+  }, [scanDevices]);
+
+  const getDeviceType = (device: { id: string; name: string; address?: string }) => {
+    if (device.name.toLowerCase().includes('audio')) return 'audio';
+    if (device.name.toLowerCase().includes('computer')) return 'computer';
+    if (device.name.toLowerCase().includes('phone')) return 'phone';
+    if (device.name.toLowerCase().includes('peripheral')) return 'peripheral';
+    if (device.name.toLowerCase().includes('obd')) return 'obd';
+    return 'unknown';
   };
 
-  const renderDeviceItem = (device: { id: string; name: string; address?: string }, isActive: boolean = false) => (
-    <TouchableOpacity
-      key={device.id}
-      style={[
-        styles.deviceItem, 
-        { backgroundColor: isDarkMode ? '#1a1a1a' : '#f5f5f5' },
-        isActive && styles.activeDevice
-      ]}
-      onPress={() => handleDevicePress(device.id, isActive)}
-    >
-      <View style={[styles.deviceIcon, { backgroundColor: isDarkMode ? '#333' : '#e0e0e0' }]}>
-        <Ionicons 
-          name={isActive ? "bluetooth" : "bluetooth-outline"} 
-          size={24} 
-          color={isActive ? '#4CAF50' : (isDarkMode ? 'white' : 'black')} 
-        />
-      </View>
-      <View style={styles.deviceInfo}>
-        <Text style={[styles.deviceName, { color: isDarkMode ? 'white' : 'black' }]}>
-          {device.name || 'Unknown Device'}
-        </Text>
-        {device.address && (
-          <Text style={[styles.deviceAddress, { color: isDarkMode ? '#888' : '#666' }]}>
-            {device.address}
+  const renderDeviceItem = (device: { id: string; name: string; address?: string }, isActive: boolean = false) => {
+    const deviceType = getDeviceType({ id: device.id, name: device.name, address: device.address });
+    const getDeviceIcon = (type: string) => {
+      switch(type) {
+        case 'audio':
+          return 'headset';
+        case 'computer':
+          return 'laptop';
+        case 'phone':
+          return 'phone-portrait';
+        case 'peripheral':
+          return 'hardware-chip';
+        case 'obd':
+          return 'car';
+        default:
+          return isActive ? "bluetooth" : "bluetooth-outline";
+      }
+    };
+
+    return (
+      <TouchableOpacity
+        key={device.id}
+        style={[
+          styles.deviceItem, 
+          { backgroundColor: isDarkMode ? '#1a1a1a' : '#f5f5f5' },
+          isActive && styles.activeDevice
+        ]}
+        onPress={() => handleDevicePress(device.id, isActive)}
+      >
+        <View style={[styles.deviceIcon, { backgroundColor: isDarkMode ? '#333' : '#e0e0e0' }]}>
+          <Ionicons 
+            name={getDeviceIcon(deviceType)}
+            size={24} 
+            color={isActive ? '#4CAF50' : (isDarkMode ? 'white' : 'black')} 
+          />
+        </View>
+        <View style={styles.deviceInfo}>
+          <Text style={[styles.deviceName, { color: isDarkMode ? 'white' : 'black' }]}>
+            {device.name || 'Unknown Device'}
           </Text>
-        )}
-      </View>
-      <Ionicons 
-        name={isActive ? "close-circle" : "checkmark-circle"} 
-        size={24} 
-        color={isActive ? '#f44336' : '#4CAF50'} 
-      />
-    </TouchableOpacity>
-  );
+          <View style={styles.deviceDetails}>
+            {device.address && (
+              <Text style={[styles.deviceAddress, { color: isDarkMode ? '#888' : '#666' }]}>
+                {device.address}
+              </Text>
+            )}
+            <Text style={[styles.deviceType, { color: isDarkMode ? '#4CAF50' : '#2E7D32' }]}>
+              {deviceType.charAt(0).toUpperCase() + deviceType.slice(1)}
+            </Text>
+          </View>
+        </View>
+        <Ionicons 
+          name={isActive ? "close-circle" : "checkmark-circle"} 
+          size={24} 
+          color={isActive ? '#f44336' : '#4CAF50'} 
+        />
+      </TouchableOpacity>
+    );
+  };
 
   const renderSettingItem = (
     title: string,
@@ -216,12 +265,12 @@ export default function SettingsScreen() {
           </View>
           <View style={styles.settingInfo}>
             <Text style={[styles.settingTitle, { color: isDarkMode ? 'white' : 'black' }]}>
-              OBD Devices
+              Bluetooth Devices
             </Text>
             <Text style={[styles.settingDescription, { color: isDarkMode ? '#888' : '#666' }]}>
               {isConnected 
                 ? `Connected to ${connectedDeviceInfo?.name}`
-                : 'Manage OBD device connections'}
+                : 'Manage Bluetooth device connections'}
             </Text>
           </View>
           <Ionicons 
@@ -261,7 +310,7 @@ export default function SettingsScreen() {
           <View style={[styles.modalContent, { backgroundColor: isDarkMode ? '#1a1a1a' : '#fff' }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: isDarkMode ? 'white' : 'black' }]}>
-                OBD Devices
+                Bluetooth Devices
               </Text>
               <TouchableOpacity
                 style={[styles.closeButton, { backgroundColor: isDarkMode ? '#333' : '#e0e0e0' }]}
@@ -487,9 +536,18 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  deviceDetails: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
   deviceAddress: {
     fontSize: 14,
-    marginTop: 4,
+    marginRight: 10,
+  },
+  deviceType: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   emptyText: {
     textAlign: 'center',

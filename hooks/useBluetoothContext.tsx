@@ -1,310 +1,261 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Alert, Platform } from 'react-native';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import BluetoothSerial from 'react-native-bluetooth-serial-next';
+import { Alert, Platform } from 'react-native';
 
-// Only import Bluetooth on Android and ensure it's loaded
-let RNBluetoothSerial: any = null;
-if (Platform.OS === 'android') {
-  try {
-    const BluetoothSerialModule = require('react-native-bluetooth-serial-next');
-    RNBluetoothSerial = BluetoothSerialModule.default || BluetoothSerialModule;
-    if (!RNBluetoothSerial) {
-      console.error('Failed to load BluetoothSerial module');
-    }
-  } catch (error) {
-    console.error('Error loading BluetoothSerial module:', error);
-  }
-}
-
-interface BluetoothDevice {
+type BluetoothDevice = {
   id: string;
   name: string;
   address?: string;
-  class?: string | number;
-  bondState?: number;
-}
-
-interface ConnectedDeviceInfo {
-  id: string;
-  name: string;
-}
+};
 
 type BluetoothContextType = {
   isEnabled: boolean;
   isConnected: boolean;
   autoConnect: boolean;
+  connectionError: string | null;
   availableDevices: BluetoothDevice[];
   pairedDevices: BluetoothDevice[];
-  connectedDeviceInfo: ConnectedDeviceInfo | null;
+  connectedDeviceInfo: BluetoothDevice | null;
+  toggleAutoConnect: () => Promise<void>;
   connect: (deviceId: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  sendCommand: (command: string) => Promise<string>;
+  clearBuffer: () => void;
   scanDevices: () => Promise<void>;
-  toggleAutoConnect: () => Promise<void>;
 };
 
 const BluetoothContext = createContext<BluetoothContextType | undefined>(undefined);
 
-const isSupportedPlatform = Platform.OS === 'android';
+const LAST_CONNECTED_DEVICE_KEY = 'lastConnectedBluetoothDevice';
+const DRIVER_CONFIG = {
+  baudRate: 38400,
+  protocol: 'elm327' as const,
+  bufferSize: 1024,
+};
 
 export function BluetoothProvider({ children }: { children: React.ReactNode }) {
   const [isEnabled, setIsEnabled] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [autoConnect, setAutoConnect] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [availableDevices, setAvailableDevices] = useState<BluetoothDevice[]>([]);
   const [pairedDevices, setPairedDevices] = useState<BluetoothDevice[]>([]);
-  const [connectedDeviceInfo, setConnectedDeviceInfo] = useState<ConnectedDeviceInfo | null>(null);
-  const [isBluetoothReady, setIsBluetoothReady] = useState(false);
+  const [connectedDeviceInfo, setConnectedDeviceInfo] = useState<BluetoothDevice | null>(null);
+  const bluetoothInitialized = useRef(false);
+
+  useEffect(() => {
+    if (!bluetoothInitialized.current) {
+      initializeBluetooth();
+      loadAutoConnectPreference();
+      bluetoothInitialized.current = true;
+    }
+
+    return () => {
+      if (isConnected && BluetoothSerial?.disconnect) {
+        BluetoothSerial.disconnect().catch(console.error);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (autoConnect && !isConnected) {
+      connectToLastDevice();
+    }
+  }, [autoConnect, isEnabled]);
 
   const initializeBluetooth = async () => {
-    if (!isSupportedPlatform) {
-      setIsBluetoothReady(false);
-      return;
-    }
-
-    if (!RNBluetoothSerial) {
-      console.error('BluetoothSerial module not available');
-      setIsBluetoothReady(false);
-      return;
-    }
+    if (Platform.OS === 'web') return;
 
     try {
-      // First check if the module is properly loaded
-      if (typeof RNBluetoothSerial.isEnabled !== 'function') {
-        throw new Error('BluetoothSerial methods not available');
-      }
-
-      // Check if Bluetooth is enabled
-      const enabled = await RNBluetoothSerial.isEnabled();
+      const enabled = await BluetoothSerial.isEnabled();
       setIsEnabled(enabled);
 
-      if (enabled) {
-        // Verify list method is available
-        if (typeof RNBluetoothSerial.list !== 'function') {
-          throw new Error('BluetoothSerial list method not available');
-        }
-        const devices = await RNBluetoothSerial.list();
-        setPairedDevices(devices);
-        setIsBluetoothReady(true);
-      } else {
-        try {
-          // Verify requestEnable method is available
-          if (typeof RNBluetoothSerial.requestEnable !== 'function') {
-            throw new Error('BluetoothSerial requestEnable method not available');
-          }
-          const enabled = await RNBluetoothSerial.requestEnable();
-          setIsEnabled(enabled);
-          if (enabled) {
-            const devices = await RNBluetoothSerial.list();
-            setPairedDevices(devices);
-            setIsBluetoothReady(true);
-          }
-        } catch (enableError) {
-          console.error('Error enabling Bluetooth:', enableError);
-          setIsBluetoothReady(false);
+      if (!enabled) {
+        const requested = await BluetoothSerial.requestEnable();
+        setIsEnabled(requested);
+        if (!requested) {
+          setConnectionError('Bluetooth is not enabled');
+          return;
         }
       }
+
+      const devices = await BluetoothSerial.list();
+      setPairedDevices(devices);
+
+      BluetoothSerial.on('data', (data: any) => {
+        if (data?.type === 'connect') {
+          setIsConnected(true);
+        } else if (data?.type === 'disconnect') {
+          setIsConnected(false);
+          setConnectedDeviceInfo(null);
+        }
+      });
+
+      BluetoothSerial.on('error', (error) => {
+        console.error('Bluetooth error:', error);
+        setConnectionError(error.message);
+        setIsConnected(false);
+        setConnectedDeviceInfo(null);
+      });
+
     } catch (error) {
       console.error('Error initializing Bluetooth:', error);
-      setIsBluetoothReady(false);
+      setConnectionError('Failed to initialize Bluetooth');
       setIsEnabled(false);
     }
   };
 
-  useEffect(() => {
-    loadBluetoothPreferences();
-    if (isSupportedPlatform) {
-      initializeBluetooth();
-    }
-  }, []);
-
-  useEffect(() => {
-    if (autoConnect && !isConnected && pairedDevices.length > 0) {
-      connectToLastDevice();
-    }
-  }, [autoConnect, isEnabled, pairedDevices]);
-
-  // Add new useEffect to verify Bluetooth module on mount
-  useEffect(() => {
-    if (isSupportedPlatform) {
-      // Verify module is loaded
-      if (!RNBluetoothSerial) {
-        console.error('BluetoothSerial module not available on mount');
-        setIsBluetoothReady(false);
-        return;
-      }
-
-      // Verify required methods exist
-      const requiredMethods = ['isEnabled', 'requestEnable', 'list', 'connect', 'disconnect', 'discoverUnpairedDevices'];
-      const missingMethods = requiredMethods.filter(method => typeof RNBluetoothSerial[method] !== 'function');
-      
-      if (missingMethods.length > 0) {
-        console.error('Missing BluetoothSerial methods:', missingMethods);
-        setIsBluetoothReady(false);
-        return;
-      }
-
-      setIsBluetoothReady(true);
-    }
-  }, []);
-
-  const loadBluetoothPreferences = async () => {
+  const loadAutoConnectPreference = async () => {
     try {
       const savedSettings = await AsyncStorage.getItem('userSettings');
       if (savedSettings) {
         const settings = JSON.parse(savedSettings);
-        setAutoConnect(settings.autoBluetoothConnect || false);
+        setAutoConnect(settings.autoBluetoothConnect ?? false);
       }
     } catch (error) {
-      console.error('Error loading Bluetooth preferences:', error);
-    }
-  };
-
-  const connectToLastDevice = async () => {
-    if (!isSupportedPlatform) return;
-    
-    try {
-      const lastDeviceJson = await AsyncStorage.getItem('lastConnectedDevice');
-      if (lastDeviceJson) {
-        const lastDevice: ConnectedDeviceInfo = JSON.parse(lastDeviceJson);
-        await connect(lastDevice.id);
-      }
-    } catch (error) {
-      console.error('Error auto-connecting:', error);
-    }
-  };
-
-  const connect = async (deviceId: string) => {
-    if (!isSupportedPlatform || !RNBluetoothSerial) {
-      return;
-    }
-
-    try {
-      // Check if Bluetooth is ready
-      if (!isBluetoothReady) {
-        throw new Error('Bluetooth not ready');
-      }
-
-      await RNBluetoothSerial.connect(deviceId);
-      setIsConnected(true);
-
-      // Find the device info from either paired or available devices
-      const device = [...pairedDevices, ...availableDevices].find(d => d.id === deviceId);
-      if (device) {
-        const deviceInfo = { id: device.id, name: device.name };
-        setConnectedDeviceInfo(deviceInfo);
-        await AsyncStorage.setItem('lastConnectedDevice', JSON.stringify(deviceInfo));
-      }
-    } catch (error) {
-      console.error('Error connecting to device:', error);
-      setIsConnected(false);
-      setConnectedDeviceInfo(null);
-      Alert.alert('Connection Error', 'Failed to connect to device');
-    }
-  };
-
-  const disconnect = async () => {
-    // Early return if not on Android
-    if (!isSupportedPlatform) {
-      setIsConnected(false);
-      setConnectedDeviceInfo(null);
-      return;
-    }
-
-    // Check if module is available
-    if (!RNBluetoothSerial) {
-      console.error('BluetoothSerial module not available');
-      setIsConnected(false);
-      setConnectedDeviceInfo(null);
-      return;
-    }
-
-    try {
-      // Verify disconnect method exists
-      if (typeof RNBluetoothSerial.disconnect !== 'function') {
-        throw new Error('BluetoothSerial disconnect method not available');
-      }
-
-      // Only try to disconnect if we think we're connected
-      if (isConnected) {
-        await RNBluetoothSerial.disconnect();
-      }
-
-      // Clean up state
-      setIsConnected(false);
-      setConnectedDeviceInfo(null);
-    } catch (error) {
-      console.error('Error during disconnect:', error);
-      // Still clean up state even if disconnect fails
-      setIsConnected(false);
-      setConnectedDeviceInfo(null);
-      
-      // Show error to user
-      Alert.alert(
-        'Disconnect Error',
-        'Failed to disconnect from device. The connection state has been reset.'
-      );
-    }
-  };
-
-  const scanDevices = async () => {
-    if (!isSupportedPlatform || !RNBluetoothSerial) {
-      return;
-    }
-
-    try {
-      if (!isEnabled) {
-        await initializeBluetooth();
-      }
-      
-      const devices = await RNBluetoothSerial.discoverUnpairedDevices();
-      setAvailableDevices(devices);
-    } catch (error) {
-      console.error('Error scanning devices:', error);
-      Alert.alert('Scan Error', 'Failed to scan for devices');
+      console.error('Error loading auto-connect preference:', error);
     }
   };
 
   const toggleAutoConnect = async () => {
     try {
-      const newAutoConnect = !autoConnect;
       const savedSettings = await AsyncStorage.getItem('userSettings');
       const settings = savedSettings ? JSON.parse(savedSettings) : {};
-      const newSettings = { ...settings, autoBluetoothConnect: newAutoConnect };
-      await AsyncStorage.setItem('userSettings', JSON.stringify(newSettings));
+      const newAutoConnect = !autoConnect;
+      await AsyncStorage.setItem('userSettings', JSON.stringify({
+        ...settings,
+        autoBluetoothConnect: newAutoConnect
+      }));
       setAutoConnect(newAutoConnect);
     } catch (error) {
-      console.error('Error saving auto-connect preference:', error);
+      console.error('Error toggling auto-connect:', error);
+      throw new Error('Failed to toggle auto-connect');
     }
   };
 
-  // Default context value for non-supported platforms
-  const defaultContextValue: BluetoothContextType = {
-    isEnabled: false,
-    isConnected: false,
-    autoConnect: false,
-    availableDevices: [],
-    pairedDevices: [],
-    connectedDeviceInfo: null,
-    connect: async () => {},
-    disconnect: async () => {},
-    scanDevices: async () => {},
-    toggleAutoConnect: async () => {},
+  const connectToLastDevice = async () => {
+    try {
+      const lastDeviceId = await AsyncStorage.getItem(LAST_CONNECTED_DEVICE_KEY);
+      if (lastDeviceId) {
+        await connect(lastDeviceId);
+      }
+    } catch (error) {
+      console.error('Error connecting to last device:', error);
+    }
+  };
+
+  const connect = async (deviceId: string) => {
+    if (!isEnabled) {
+      throw new Error('Bluetooth is not enabled');
+    }
+
+    try {
+      setConnectionError(null);
+      const connected = await BluetoothSerial.connect(deviceId, DRIVER_CONFIG);
+      if (connected) {
+        const device = [...pairedDevices, ...availableDevices].find(d => d.id === deviceId);
+        if (device) {
+          setConnectedDeviceInfo(device);
+          setIsConnected(true);
+          await AsyncStorage.setItem(LAST_CONNECTED_DEVICE_KEY, deviceId);
+        }
+      } else {
+        throw new Error('Failed to connect to device');
+      }
+    } catch (error) {
+      console.error('Error connecting to device:', error);
+      setConnectionError('Failed to connect to device');
+      throw error;
+    }
+  };
+
+  const disconnect = async () => {
+    try {
+      if (!isConnected) return;
+
+      if (!BluetoothSerial || typeof BluetoothSerial.disconnect !== 'function') {
+        throw new Error('BluetoothSerial is not available or improperly initialized');
+      }
+
+      const enabled = await BluetoothSerial.isEnabled();
+      if (!enabled) {
+        throw new Error('Bluetooth is not enabled');
+      }
+
+      const disconnected = await BluetoothSerial.disconnect();
+      if (!disconnected) {
+        throw new Error('Failed to disconnect from device');
+      }
+
+      setIsConnected(false);
+      setConnectedDeviceInfo(null);
+    } catch (error) {
+      console.error('Error disconnecting:', error);
+      setIsConnected(false);
+      setConnectedDeviceInfo(null);
+      throw error;
+    }
+  };
+
+  const sendCommand = async (command: string): Promise<string> => {
+    if (!isConnected) {
+      throw new Error('No device connected');
+    }
+
+    try {
+      await BluetoothSerial.write(command);
+      const response = await Promise.race([
+        BluetoothSerial.readLine(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Command timeout')), 5000)
+        )
+      ]);
+      return response as string;
+    } catch (error) {
+      console.error('Error sending command:', error);
+      throw new Error('Failed to send command to device');
+    }
+  };
+
+  const clearBuffer = () => {
+    if (isConnected && typeof BluetoothSerial.clear === 'function') {
+      BluetoothSerial.clear();
+    }
+  };
+
+  const scanDevices = async () => {
+    if (!isEnabled) {
+      throw new Error('Bluetooth is not enabled');
+    }
+
+    try {
+      const devices = await BluetoothSerial.discoverUnpairedDevices();
+      setAvailableDevices(devices.filter(device =>
+        !pairedDevices.some(paired => paired.id === device.id)
+      ));
+    } catch (error) {
+      console.error('Error scanning devices:', error);
+      throw new Error('Failed to scan for devices');
+    }
   };
 
   return (
-    <BluetoothContext.Provider
-      value={isSupportedPlatform ? {
-        isEnabled,
-        isConnected,
-        autoConnect,
-        availableDevices,
-        pairedDevices,
-        connectedDeviceInfo,
-        connect,
-        disconnect,
-        scanDevices,
-        toggleAutoConnect,
-      } : defaultContextValue}>
+    <BluetoothContext.Provider value={{
+      isEnabled,
+      isConnected,
+      autoConnect,
+      connectionError,
+      availableDevices,
+      pairedDevices,
+      connectedDeviceInfo,
+      toggleAutoConnect,
+      connect,
+      disconnect,
+      sendCommand,
+      clearBuffer,
+      scanDevices,
+    }}>
       {children}
     </BluetoothContext.Provider>
   );

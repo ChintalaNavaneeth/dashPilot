@@ -1,59 +1,155 @@
-import { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ScrollView } from 'react-native';
+import { useState, useEffect, useCallback } from 'react';
+import { StyleSheet, View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useThemeContext';
-import { useBluetooth } from '@/hooks/useBluetoothContext';
+import { useBluetooth } from '../hooks/useBluetoothContext';
+import BluetoothSerial from 'react-native-bluetooth-serial-next';
 
 interface OBDData {
-  rpm: number;
-  speed: number;
-  coolantTemp: number;
-  fuelLevel: number;
-  engineLoad: number;
-  throttlePos: number;
-  batteryVoltage: number;
+  rpm: number | null;
+  speed: number | null;
+  coolantTemp: number | null;
+  fuelLevel: number | null;
+  engineLoad: number | null;
+  throttlePos: number | null;
+  batteryVoltage: number | null;
 }
+
+const INITIAL_OBD_DATA: OBDData = {
+  rpm: null,
+  speed: null,
+  coolantTemp: null,
+  fuelLevel: null,
+  engineLoad: null,
+  throttlePos: null,
+  batteryVoltage: null,
+};
+
+// OBD-II PID commands
+const PID_COMMANDS = {
+  RPM: '010C',            // Engine RPM
+  SPEED: '010D',          // Vehicle speed
+  COOLANT_TEMP: '0105',   // Engine coolant temperature
+  FUEL_LEVEL: '012F',     // Fuel level input
+  ENGINE_LOAD: '0104',    // Calculated engine load
+  THROTTLE_POS: '0111',   // Throttle position
+  CONTROL_MODULE_VOLTAGE: '0142', // Control module voltage
+};
+
+const OBD_DRIVER_CONFIG = {
+  baudRate: 38400,
+  protocol: 'elm327' as const,
+  bufferSize: 1024,
+};
 
 export default function OBDScreen() {
   const { isDarkMode } = useTheme();
-  const { isConnected, connectedDeviceInfo } = useBluetooth();
-  const [data, setData] = useState<OBDData>({
-    rpm: 0,
-    speed: 0,
-    coolantTemp: 0,
-    fuelLevel: 0,
-    engineLoad: 0,
-    throttlePos: 0,
-    batteryVoltage: 0
-  });
+  const { 
+    isConnected, 
+    connectedDeviceInfo, 
+    connectionError,
+    connect,
+    sendCommand,
+    clearBuffer 
+  } = useBluetooth();
+  
+  const [data, setData] = useState<OBDData>(INITIAL_OBD_DATA);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Only start data polling when connected
-    let interval: NodeJS.Timeout;
-    if (isConnected) {
-      interval = setInterval(() => {
-        // TODO: Replace with actual OBD data reading
-        setData({
-          rpm: Math.floor(Math.random() * 4000) + 800,
-          speed: Math.floor(Math.random() * 120),
-          coolantTemp: Math.floor(Math.random() * 40) + 60,
-          fuelLevel: Math.floor(Math.random() * 100),
-          engineLoad: Math.floor(Math.random() * 100),
-          throttlePos: Math.floor(Math.random() * 100),
-          batteryVoltage: (Math.random() * 2 + 11).toFixed(1) as unknown as number
-        });
-      }, 1000);
+  const sendOBDCommand = useCallback(async (command: string): Promise<string> => {
+    try {
+      clearBuffer(); // Clear any stale data
+      const response = await sendCommand(command + '\r');
+      const parts = response.split(' ');
+      if (parts[0] === '41') {
+        return parts.slice(2).join('');
+      }
+      throw new Error('Invalid OBD response format');
+    } catch (error) {
+      console.error(`Error sending OBD command ${command}:`, error);
+      throw error;
+    }
+  }, [sendCommand, clearBuffer]);
+
+  const parseOBDData = useCallback((pid: string, hexData: string): number => {
+    const value = parseInt(hexData, 16);
+    switch (pid) {
+      case PID_COMMANDS.RPM:
+        return ((value >> 8) * 256 + (value & 0xFF)) / 4; // RPM = ((A * 256) + B) / 4
+      case PID_COMMANDS.SPEED:
+        return value; // Speed in km/h
+      case PID_COMMANDS.COOLANT_TEMP:
+        return value - 40; // Temperature in °C
+      case PID_COMMANDS.FUEL_LEVEL:
+        return (value * 100) / 255; // Percentage
+      case PID_COMMANDS.ENGINE_LOAD:
+        return (value * 100) / 255; // Percentage
+      case PID_COMMANDS.THROTTLE_POS:
+        return (value * 100) / 255; // Percentage
+      case PID_COMMANDS.CONTROL_MODULE_VOLTAGE:
+        return value / 1000; // Voltage
+      default:
+        return value;
+    }
+  }, []);
+
+  const fetchOBDData = useCallback(async () => {
+    if (!isConnected) {
+      setError('No OBD device connected');
+      setIsLoading(false);
+      return;
     }
 
-    return () => {
-      if (interval) {
-        clearInterval(interval);
-      }
-    };
-  }, [isConnected]);
+    try {
+      setError(null);
+      const newData: OBDData = { ...INITIAL_OBD_DATA };
 
-  const renderDataItem = (label: string, value: number, unit: string, icon: keyof typeof Ionicons.glyphMap) => (
+      // Fetch each PID value
+      const [rpm, speed, coolant, fuel, load, throttle, voltage] = await Promise.all([
+        sendOBDCommand(PID_COMMANDS.RPM),
+        sendOBDCommand(PID_COMMANDS.SPEED),
+        sendOBDCommand(PID_COMMANDS.COOLANT_TEMP),
+        sendOBDCommand(PID_COMMANDS.FUEL_LEVEL),
+        sendOBDCommand(PID_COMMANDS.ENGINE_LOAD),
+        sendOBDCommand(PID_COMMANDS.THROTTLE_POS),
+        sendOBDCommand(PID_COMMANDS.CONTROL_MODULE_VOLTAGE),
+      ]);
+
+      // Parse the responses
+      newData.rpm = parseOBDData(PID_COMMANDS.RPM, rpm);
+      newData.speed = parseOBDData(PID_COMMANDS.SPEED, speed);
+      newData.coolantTemp = parseOBDData(PID_COMMANDS.COOLANT_TEMP, coolant);
+      newData.fuelLevel = parseOBDData(PID_COMMANDS.FUEL_LEVEL, fuel);
+      newData.engineLoad = parseOBDData(PID_COMMANDS.ENGINE_LOAD, load);
+      newData.throttlePos = parseOBDData(PID_COMMANDS.THROTTLE_POS, throttle);
+      newData.batteryVoltage = parseOBDData(PID_COMMANDS.CONTROL_MODULE_VOLTAGE, voltage);
+
+      setData(newData);
+    } catch (error) {
+      console.error('Error fetching OBD data:', error);
+      setError('Failed to fetch OBD data. Please check your connection.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isConnected, sendOBDCommand, parseOBDData]);
+
+  useEffect(() => {
+    if (isConnected) {
+      // Initial fetch
+      fetchOBDData();
+
+      // Set up polling interval
+      const interval = setInterval(fetchOBDData, 1000);
+      return () => clearInterval(interval);
+    } else {
+      setData(INITIAL_OBD_DATA);
+      setIsLoading(false);
+    }
+  }, [isConnected, fetchOBDData]);
+
+  const renderDataItem = (label: string, value: number | null, unit: string, icon: keyof typeof Ionicons.glyphMap) => (
     <View style={[styles.dataItem, { backgroundColor: isDarkMode ? '#1a1a1a' : '#f5f5f5' }]}>
       <View style={[styles.dataIcon, { backgroundColor: isDarkMode ? '#333' : '#e0e0e0' }]}>
         <Ionicons name={icon} size={24} color={isDarkMode ? 'white' : 'black'} />
@@ -61,7 +157,7 @@ export default function OBDScreen() {
       <View style={styles.dataInfo}>
         <Text style={[styles.dataLabel, { color: isDarkMode ? '#888' : '#666' }]}>{label}</Text>
         <Text style={[styles.dataValue, { color: isDarkMode ? 'white' : 'black' }]}>
-          {value} {unit}
+          {value !== null ? `${value.toFixed(1)} ${unit}` : 'N/A'}
         </Text>
       </View>
     </View>
@@ -86,6 +182,26 @@ export default function OBDScreen() {
           <Text style={[styles.noConnectionSubtext, { color: isDarkMode ? '#888' : '#666' }]}>
             Please connect an OBD device in Settings
           </Text>
+        </View>
+      ) : isLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#4CAF50" />
+          <Text style={[styles.loadingText, { color: isDarkMode ? '#888' : '#666' }]}>
+            Connecting to {connectedDeviceInfo?.name || 'OBD Device'}...
+          </Text>
+        </View>
+      ) : error ? (
+        <View style={styles.errorContainer}>
+          <Ionicons name="warning" size={48} color="#f44336" />
+          <Text style={[styles.errorText, { color: isDarkMode ? 'white' : 'black' }]}>
+            {error}
+          </Text>
+          <TouchableOpacity 
+            style={styles.retryButton}
+            onPress={fetchOBDData}
+          >
+            <Text style={styles.retryButtonText}>Retry</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <ScrollView style={styles.scrollView}>
@@ -166,6 +282,37 @@ const styles = StyleSheet.create({
   },
   noConnectionSubtext: {
     fontSize: 16,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    marginTop: 10,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorText: {
+    fontSize: 18,
+    textAlign: 'center',
+    marginVertical: 20,
+  },
+  retryButton: {
+    backgroundColor: '#4CAF50',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 5,
+  },
+  retryButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
   },
   connectedDevice: {
     fontSize: 16,

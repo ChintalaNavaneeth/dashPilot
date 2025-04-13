@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { activateKeepAwake, deactivateKeepAwake } from 'expo-keep-awake';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Platform } from 'react-native';
 
 type WakeContextType = {
@@ -23,7 +23,7 @@ export function WakeProvider({ children }: { children: React.ReactNode }) {
       const handleVisibilityChange = () => {
         if (keepScreenOn) {
           if (document.visibilityState === 'visible') {
-            activateKeepAwake();
+            activateKeepAwakeAsync();
           } else {
             deactivateKeepAwake();
           }
@@ -32,7 +32,7 @@ export function WakeProvider({ children }: { children: React.ReactNode }) {
 
       // Initial check
       if (keepScreenOn && document.visibilityState === 'visible') {
-        activateKeepAwake();
+        activateKeepAwakeAsync();
       }
 
       // Listen for visibility changes
@@ -48,7 +48,7 @@ export function WakeProvider({ children }: { children: React.ReactNode }) {
       // For native platforms, we can directly use keep awake
       if (keepScreenOn) {
         try {
-          activateKeepAwake();
+          activateKeepAwakeAsync();
         } catch (error) {
           console.error('Error activating keep awake:', error);
         }
