@@ -243,10 +243,10 @@ export default function SettingsScreen() {
             About DashPilot
           </Text>
           <Text style={[styles.appInfoText, { color: isDarkMode ? '#888' : '#666' }]}>
-            Version: {Application.nativeApplicationVersion}
+            Version: 1.0.0
           </Text>
           <Text style={[styles.appInfoText, { color: isDarkMode ? '#888' : '#666' }]}>
-            Build: {Application.nativeBuildVersion}
+            Build: 1
           </Text>
         </View>
       </ScrollView>
