@@ -9,7 +9,6 @@ import 'react-native-reanimated';
 
 import { ThemeProvider, useTheme } from '@/hooks/useThemeContext';
 import { WakeProvider } from '@/hooks/useWakeContext';
-import { BluetoothProvider } from '@/hooks/useBluetoothContext';
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -45,7 +44,6 @@ function RootLayoutNavigation({ theme }: { theme: 'light' | 'dark' }) {
           <Stack.Screen name="index" />
           <Stack.Screen name="navigation" />
           <Stack.Screen name="settings" />
-          <Stack.Screen name="obd" />
           <Stack.Screen name="(tabs)" />
         </Stack>
       </View>
@@ -57,9 +55,7 @@ export default function RootLayout() {
   return (
     <ThemeProvider>
       <WakeProvider>
-        <BluetoothProvider>
-          <ThemeAwareNavigation />
-        </BluetoothProvider>
+        <ThemeAwareNavigation />
       </WakeProvider>
     </ThemeProvider>
   );

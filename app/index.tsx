@@ -30,15 +30,6 @@ export default function DashboardScreen() {
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={[styles.button, { backgroundColor: isDarkMode ? '#1a1a1a' : '#f5f5f5' }]} 
-          onPress={() => router.navigate('/obd')}
-        >
-          <Ionicons name="speedometer" size={48} color={isDarkMode ? 'white' : 'black'} />
-          <Text style={[styles.buttonText, { color: isDarkMode ? 'white' : 'black' }]}>
-            OBD Data
-          </Text>
-        </TouchableOpacity>
 
         <TouchableOpacity 
           style={[styles.button, { backgroundColor: isDarkMode ? '#1a1a1a' : '#f5f5f5' }]} 
